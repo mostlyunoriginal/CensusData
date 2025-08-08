@@ -1,7 +1,7 @@
 import os
 import re
 import requests
-from typing import List, Union, Dict, Optional
+from typing import List, Union, Dict, Optional, Callable
 
 
 class CensusData:
@@ -84,10 +84,22 @@ class CensusData:
     def list_products(
         self,
         years: Optional[Union[int, List[int]]] = None,
-        pattern: Optional[str] = None,
-        to_dicts: bool = False,
+        pattern: Optional[Union[str, List[str]]] = None,
+        to_dicts: bool = True,
+        logic: Callable[[iter], bool] = all,
     ) -> Union[List[str], List[Dict[str, str]]]:
-        """Lists available data products from the JSON endpoint."""
+        """
+        Lists available data products from the JSON endpoint.
+
+        Args:
+            years (int | list[int], optional): Filters products for these years.
+            pattern (str | list[str], optional): A regex pattern or list of
+                patterns to filter products by title.
+            to_dicts (bool): If True (default), returns a list of dictionaries.
+                             If False, returns a list of product titles.
+            logic (callable): `all` (default) or `any`. Determines if all
+                              patterns must match or if any can match.
+        """
         if not self._products_cache:
             data = self._get_json_from_url("https://api.census.gov/data.json")
             if not data or "dataset" not in data:
@@ -95,7 +107,6 @@ class CensusData:
 
             products = []
             for d in data["dataset"]:
-                # Correctly find the API base URL from the distribution list.
                 access_url = next(
                     (
                         dist.get("accessURL")
@@ -107,7 +118,6 @@ class CensusData:
                 if not access_url:
                     continue
 
-                # Safely get the dataset type
                 c_dataset_val = d.get("c_dataset")
                 dataset_type = "N/A"
                 if isinstance(c_dataset_val, list) and len(c_dataset_val) > 1:
@@ -117,9 +127,7 @@ class CensusData:
                     {
                         "title": d.get("title"),
                         "desc": d.get("description"),
-                        "vintage": self._parse_vintage(
-                            d.get("c_vintage")
-                        ),  # CORRECTED KEY
+                        "vintage": self._parse_vintage(d.get("c_vintage")),
                         "type": dataset_type,
                         "url": access_url,
                     }
@@ -133,7 +141,6 @@ class CensusData:
 
         filtered = self._products_cache
         if target_years:
-            # Check for intersection between product vintages and target years
             target_set = set(target_years)
             filtered = [
                 p
@@ -142,10 +149,14 @@ class CensusData:
             ]
 
         if pattern:
+            patterns = [pattern] if isinstance(pattern, str) else pattern
             try:
-                regex = re.compile(pattern, re.IGNORECASE)
+                regexes = [re.compile(p, re.IGNORECASE) for p in patterns]
                 filtered = [
-                    p for p in filtered if p.get("title") and regex.search(p["title"])
+                    p
+                    for p in filtered
+                    if p.get("title")
+                    and logic(regex.search(p["title"]) for regex in regexes)
                 ]
             except re.error as e:
                 print(f"❌ Invalid regex pattern: {e}")
@@ -196,7 +207,6 @@ class CensusData:
                 return
             found_product = matching_products[0]
 
-        # The base URL is now the direct API URL, no replacement needed.
         self.product = found_product
         self.product["base_url"] = self.product.get("url", "")
         print(
@@ -220,8 +230,8 @@ class CensusData:
         for geo_info in data["fips"]:
             geos.append(
                 {
-                    "sumlev": geo_info.get("name"),
-                    "desc": geo_info.get("geoLevelDisplay"),
+                    "sumlev": geo_info.get("geoLevelDisplay"),
+                    "desc": geo_info.get("name"),
                     "refdate": geo_info.get("referenceDate"),
                 }
             )
@@ -229,9 +239,22 @@ class CensusData:
         return geos if to_dicts else [g["sumlev"] for g in geos]
 
     def list_variables(
-        self, to_dicts: bool = False, pattern: Optional[str] = None
+        self,
+        to_dicts: bool = True,
+        pattern: Optional[Union[str, List[str]]] = None,
+        logic: Callable[[iter], bool] = all,
     ) -> Union[List[str], List[Dict[str, str]]]:
-        """Lists available variables for the currently set product."""
+        """
+        Lists available variables for the currently set product.
+
+        Args:
+            to_dicts (bool): If True (default), returns a list of dictionaries.
+                             If False, returns a list of variable names.
+            pattern (str | list[str], optional): A regex pattern or list of
+                patterns to filter variables by label.
+            logic (callable): `all` (default) or `any`. Determines if all
+                              patterns must match or if any can match.
+        """
         if not self.product or not self.product.get("base_url"):
             print("❌ Error: A product must be set first via `set_product()`.")
             return []
@@ -255,10 +278,14 @@ class CensusData:
             )
 
         if pattern:
+            patterns = [pattern] if isinstance(pattern, str) else pattern
             try:
-                regex = re.compile(pattern, re.IGNORECASE)
+                regexes = [re.compile(p, re.IGNORECASE) for p in patterns]
                 variables = [
-                    v for v in variables if v.get("label") and regex.search(v["label"])
+                    v
+                    for v in variables
+                    if v.get("label")
+                    and logic(regex.search(v["label"]) for regex in regexes)
                 ]
             except re.error as e:
                 print(f"❌ Invalid regex pattern: {e}")

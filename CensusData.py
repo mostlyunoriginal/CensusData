@@ -13,8 +13,7 @@ class CensusData:
 
     Attributes:
         years (list[int]): The primary year or years of interest for data queries.
-        product (dict): The currently selected data product details, including
-                        title, description, vintage, type, and URL.
+        products (list[dict]): A list of the currently selected data product details.
     """
 
     def __init__(self, years: Optional[Union[int, List[int]]] = None):
@@ -27,7 +26,7 @@ class CensusData:
                                                initialization. Defaults to None.
         """
         self.years: Optional[List[int]] = None
-        self.product: Optional[Dict[str, str]] = None
+        self.products: List[Dict] = []
         self.__key: Optional[str] = None
         self._products_cache: Optional[List[Dict[str, str]]] = None
 
@@ -84,7 +83,7 @@ class CensusData:
     def list_products(
         self,
         years: Optional[Union[int, List[int]]] = None,
-        pattern: Optional[Union[str, List[str]]] = None,
+        patterns: Optional[Union[str, List[str]]] = None,
         to_dicts: bool = True,
         logic: Callable[[iter], bool] = all,
     ) -> Union[List[str], List[Dict[str, str]]]:
@@ -93,7 +92,7 @@ class CensusData:
 
         Args:
             years (int | list[int], optional): Filters products for these years.
-            pattern (str | list[str], optional): A regex pattern or list of
+            patterns (str | list[str], optional): A regex pattern or list of
                 patterns to filter products by title.
             to_dicts (bool): If True (default), returns a list of dictionaries.
                              If False, returns a list of product titles.
@@ -148,10 +147,10 @@ class CensusData:
                 if p.get("vintage") and target_set.intersection(p["vintage"])
             ]
 
-        if pattern:
-            patterns = [pattern] if isinstance(pattern, str) else pattern
+        if patterns:
+            pattern_list = [patterns] if isinstance(patterns, str) else patterns
             try:
-                regexes = [re.compile(p, re.IGNORECASE) for p in patterns]
+                regexes = [re.compile(p, re.IGNORECASE) for p in pattern_list]
                 filtered = [
                     p
                     for p in filtered
@@ -164,126 +163,156 @@ class CensusData:
 
         return filtered if to_dicts else [p["title"] for p in filtered]
 
-    def set_product(self, title: str):
-        """Sets the active data product for the object."""
-        all_products = self.list_products(to_dicts=True, years=[])
-        if not all_products:
-            print("❌ Error: Could not retrieve product list.")
-            return
+    def set_products(self, titles: Union[str, List[str]]):
+        """
+        Sets the active data products for the object.
 
-        matching_products = [p for p in all_products if p.get("title") == title]
+        Args:
+            titles (str | list[str]): A single product title or a list of titles.
+        """
+        title_list = [titles] if isinstance(titles, str) else titles
+        all_prods = self.list_products(to_dicts=True, years=self.years or [])
 
-        if not matching_products:
-            print(f"❌ Error: No product with the title '{title}' was found.")
-            return
-
-        found_product = None
-        if self.years:
-            target_set = set(self.years)
-            found_product = next(
-                (
-                    p
-                    for p in matching_products
-                    if target_set.intersection(p.get("vintage", []))
-                ),
-                None,
-            )
-            if not found_product:
+        self.products = []
+        for title in title_list:
+            matching_products = [p for p in all_prods if p.get("title") == title]
+            if not matching_products:
                 print(
-                    f"❌ Error: Product '{title}' is not available for the specified years: {self.years}."
+                    f"⚠️ Warning: No product with the title '{title}' found for the specified years. Skipping."
                 )
-                return
-        else:
-            if len(matching_products) > 1:
-                vintages = sorted(
-                    [v for p in matching_products for v in p.get("vintage", [])]
-                )
-                print(
-                    f"❌ Error: The product title '{title}' is ambiguous and exists for multiple vintages: {vintages}."
-                )
-                print(
-                    "ℹ️ Please call `_set_years()` first to select a specific vintage."
-                )
-                return
-            found_product = matching_products[0]
+                continue
 
-        self.product = found_product
-        self.product["base_url"] = self.product.get("url", "")
-        print(
-            f"✅ Product set to: '{self.product['title']}' (Vintage(s): {self.product.get('vintage')})"
-        )
+            for product in matching_products:
+                product["base_url"] = product.get("url", "")
+                self.products.append(product)
+                print(
+                    f"✅ Product set: '{product['title']}' (Vintage(s): {product.get('vintage')})"
+                )
+
+        if not self.products:
+            print("❌ Error: No valid products were set.")
 
     def list_geos(
         self, to_dicts: bool = False
     ) -> Union[List[str], List[Dict[str, str]]]:
-        """Lists available geographies for the currently set product."""
-        if not self.product or not self.product.get("base_url"):
-            print("❌ Error: A product must be set first via `set_product()`.")
+        """
+        Lists available geographies across all currently set products.
+
+        Returns a unique list of geographies. If to_dicts is True, each
+        dictionary includes an 'applies_to' key detailing which products
+        and vintages it belongs to.
+        """
+        if not self.products:
+            print("❌ Error: Products must be set first via `set_products()`.")
             return []
 
-        url = f"{self.product['base_url']}/geography.json"
-        data = self._get_json_from_url(url)
-        if not data or "fips" not in data:
-            return []
+        combined_geos = {}
+        for product in self.products:
+            url = f"{product['base_url']}/geography.json"
+            data = self._get_json_from_url(url)
+            if not data or "fips" not in data:
+                continue
 
-        geos = []
-        for geo_info in data["fips"]:
-            geos.append(
-                {
-                    "sumlev": geo_info.get("geoLevelDisplay"),
-                    "desc": geo_info.get("name"),
-                    "refdate": geo_info.get("referenceDate"),
+            for geo_info in data["fips"]:
+                sumlev = geo_info.get("geoLevelDisplay")
+                if not sumlev:
+                    continue
+
+                applies_to_info = {
+                    "product": product["title"],
+                    "years": product["vintage"],
                 }
-            )
 
-        return geos if to_dicts else [g["sumlev"] for g in geos]
+                if sumlev not in combined_geos:
+                    combined_geos[sumlev] = {
+                        "sumlev": sumlev,
+                        "desc": geo_info.get("name"),
+                        "applies_to": [applies_to_info],
+                    }
+                else:
+                    combined_geos[sumlev]["applies_to"].append(applies_to_info)
+
+        result_list = list(combined_geos.values())
+
+        # Consolidate the 'applies_to' field for each item in the results
+        if to_dicts:
+            for item in result_list:
+                consolidated_applies_to = {}
+                for applies_info in item["applies_to"]:
+                    title = applies_info["product"]
+                    years = applies_info["years"]
+                    if title not in consolidated_applies_to:
+                        consolidated_applies_to[title] = []
+                    consolidated_applies_to[title].extend(years)
+
+                item["applies_to"] = [
+                    {"product": title, "years": sorted(list(set(years)))}
+                    for title, years in consolidated_applies_to.items()
+                ]
+
+        return result_list if to_dicts else [g["sumlev"] for g in result_list]
 
     def list_variables(
         self,
         to_dicts: bool = True,
-        pattern: Optional[Union[str, List[str]]] = None,
+        patterns: Optional[Union[str, List[str]]] = None,
         logic: Callable[[iter], bool] = all,
     ) -> Union[List[str], List[Dict[str, str]]]:
         """
-        Lists available variables for the currently set product.
+        Lists available variables across all currently set products.
+
+        Returns a unique list of variables. If to_dicts is True, each
+        dictionary includes an 'applies_to' key detailing which products
+        and vintages it belongs to.
 
         Args:
             to_dicts (bool): If True (default), returns a list of dictionaries.
                              If False, returns a list of variable names.
-            pattern (str | list[str], optional): A regex pattern or list of
+            patterns (str | list[str], optional): A regex pattern or list of
                 patterns to filter variables by label.
             logic (callable): `all` (default) or `any`. Determines if all
                               patterns must match or if any can match.
         """
-        if not self.product or not self.product.get("base_url"):
-            print("❌ Error: A product must be set first via `set_product()`.")
+        if not self.products:
+            print("❌ Error: Products must be set first via `set_products()`.")
             return []
 
-        url = f"{self.product['base_url']}/variables.json"
-        data = self._get_json_from_url(url)
-        if not data or "variables" not in data:
-            return []
-
-        variables = []
-        for name, details in data["variables"].items():
-            if name in ["GEO_ID", "for", "in"]:
+        combined_vars = {}
+        for product in self.products:
+            url = f"{product['base_url']}/variables.json"
+            data = self._get_json_from_url(url)
+            if not data or "variables" not in data:
                 continue
-            variables.append(
-                {
-                    "name": name,
-                    "label": details.get("label"),
-                    "concept": details.get("concept"),
-                    "group": details.get("group", "N/A"),
-                }
-            )
 
-        if pattern:
-            patterns = [pattern] if isinstance(pattern, str) else pattern
+            for name, details in data["variables"].items():
+                if name in ["GEO_ID", "for", "in"]:
+                    continue
+
+                applies_to_info = {
+                    "product": product["title"],
+                    "years": product["vintage"],
+                }
+
+                if name not in combined_vars:
+                    combined_vars[name] = {
+                        "name": name,
+                        "label": details.get("label"),
+                        "concept": details.get("concept"),
+                        "group": details.get("group", "N/A"),
+                        "applies_to": [applies_to_info],
+                    }
+                else:
+                    combined_vars[name]["applies_to"].append(applies_to_info)
+
+        # Filter after combining
+        result_list = list(combined_vars.values())
+        if patterns:
+            pattern_list = [patterns] if isinstance(patterns, str) else patterns
             try:
-                regexes = [re.compile(p, re.IGNORECASE) for p in patterns]
-                variables = [
+                regexes = [re.compile(p, re.IGNORECASE) for p in pattern_list]
+                result_list = [
                     v
-                    for v in variables
+                    for v in result_list
                     if v.get("label")
                     and logic(regex.search(v["label"]) for regex in regexes)
                 ]
@@ -291,4 +320,20 @@ class CensusData:
                 print(f"❌ Invalid regex pattern: {e}")
                 return []
 
-        return variables if to_dicts else [v["name"] for v in variables]
+        # Consolidate the 'applies_to' field for each item in the results
+        if to_dicts:
+            for item in result_list:
+                consolidated_applies_to = {}
+                for applies_info in item["applies_to"]:
+                    title = applies_info["product"]
+                    years = applies_info["years"]
+                    if title not in consolidated_applies_to:
+                        consolidated_applies_to[title] = []
+                    consolidated_applies_to[title].extend(years)
+
+                item["applies_to"] = [
+                    {"product": title, "years": sorted(list(set(years)))}
+                    for title, years in consolidated_applies_to.items()
+                ]
+
+        return result_list if to_dicts else [v["name"] for v in result_list]

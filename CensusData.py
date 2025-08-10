@@ -14,9 +14,13 @@ class CensusData:
     Attributes:
         years (list[int]): The primary year or years of interest for data queries.
         products (list[dict]): A list of the currently selected data product details.
+        geos (list[dict]): A list of the currently selected geographies.
+        variables (list[dict]): A list of the currently selected variables.
     """
 
-    def __init__(self, years: Optional[Union[int, List[int]]] = None):
+    def __init__(
+        self, years: Optional[Union[int, List[int]]] = None, key: Optional[str] = None
+    ):
         """
         Initializes the CensusData object.
 
@@ -24,17 +28,25 @@ class CensusData:
             years (int | list[int], optional): The year or years of interest.
                                                If provided, they are set upon
                                                initialization. Defaults to None.
+            key (str, optional): An API key to load upon initialization.
         """
         self.years: Optional[List[int]] = None
         self.products: List[Dict] = []
+        self.geos: List[Dict] = []
+        self.variables: List[Dict] = []
         self.__key: Optional[str] = None
         self._products_cache: Optional[List[Dict[str, str]]] = None
+        self._filtered_products_cache: Optional[List[Dict]] = None
+        self._filtered_geos_cache: Optional[List[Dict]] = None
+        self._filtered_variables_cache: Optional[List[Dict]] = None
 
         if years is not None:
-            self._set_years(years)
+            self.set_years(years)
+        if key is not None:
+            self.load_key(key)
 
-    def _set_years(self, years: Union[int, List[int]]):
-        """Internal method to set the object's years attribute."""
+    def set_years(self, years: Union[int, List[int]]):
+        """Sets the object's years attribute."""
         if isinstance(years, int):
             self.years = [years]
         elif isinstance(years, list) and all(isinstance(y, int) for y in years):
@@ -54,7 +66,8 @@ class CensusData:
     def _get_json_from_url(self, url: str) -> Optional[Dict]:
         """Helper to fetch and parse JSON from a URL."""
         try:
-            response = requests.get(url, timeout=10)
+            params = {"key": self.__key} if self.__key else {}
+            response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
@@ -88,7 +101,8 @@ class CensusData:
         logic: Callable[[iter], bool] = all,
     ) -> Union[List[str], List[Dict[str, str]]]:
         """
-        Lists available data products from the JSON endpoint.
+        Lists available data products from the JSON endpoint. The results of this
+        call are cached and can be applied by calling `set_products()` with no arguments.
 
         Args:
             years (int | list[int], optional): Filters products for these years.
@@ -161,46 +175,64 @@ class CensusData:
                 print(f"❌ Invalid regex pattern: {e}")
                 return []
 
+        self._filtered_products_cache = filtered
         return filtered if to_dicts else [p["title"] for p in filtered]
 
-    def set_products(self, titles: Union[str, List[str]]):
+    def set_products(self, titles: Optional[Union[str, List[str]]] = None):
         """
-        Sets the active data products for the object.
+        Sets the active data products. If titles are provided, sets those specific
+        products. If no titles are provided, sets all products from the last
+        `list_products` call.
 
         Args:
-            titles (str | list[str]): A single product title or a list of titles.
+            titles (str | list[str], optional): A single product title or a list of titles.
         """
-        title_list = [titles] if isinstance(titles, str) else titles
-        all_prods = self.list_products(to_dicts=True, years=self.years or [])
+        prods_to_set = []
+        if titles is None:
+            if not self._filtered_products_cache:
+                print(
+                    "❌ Error: No products to set. Run `list_products` with your desired filters first."
+                )
+                return
+            prods_to_set = self._filtered_products_cache
+        else:
+            title_list = [titles] if isinstance(titles, str) else titles
+            all_prods = self.list_products(to_dicts=True, years=self.years or [])
+
+            for title in title_list:
+                matching_products = [p for p in all_prods if p.get("title") == title]
+                if not matching_products:
+                    print(
+                        f"⚠️ Warning: No product with the title '{title}' found. Skipping."
+                    )
+                    continue
+                prods_to_set.extend(matching_products)
 
         self.products = []
-        for title in title_list:
-            matching_products = [p for p in all_prods if p.get("title") == title]
-            if not matching_products:
-                print(
-                    f"⚠️ Warning: No product with the title '{title}' found for the specified years. Skipping."
-                )
-                continue
+        if not prods_to_set:
+            print("❌ Error: No valid products were found to set.")
+            return
 
-            for product in matching_products:
-                product["base_url"] = product.get("url", "")
-                self.products.append(product)
-                print(
-                    f"✅ Product set: '{product['title']}' (Vintage(s): {product.get('vintage')})"
-                )
-
-        if not self.products:
-            print("❌ Error: No valid products were set.")
+        for product in prods_to_set:
+            product["base_url"] = product.get("url", "")
+            self.products.append(product)
+            print(
+                f"✅ Product set: '{product['title']}' (Vintage(s): {product.get('vintage')})"
+            )
 
     def list_geos(
-        self, to_dicts: bool = False
+        self,
+        to_dicts: bool = False,
+        patterns: Optional[Union[str, List[str]]] = None,
+        logic: Callable[[iter], bool] = all,
     ) -> Union[List[str], List[Dict[str, str]]]:
         """
         Lists available geographies across all currently set products.
 
-        Returns a unique list of geographies. If to_dicts is True, each
-        dictionary includes an 'applies_to' key detailing which products
-        and vintages it belongs to.
+        Args:
+            to_dicts (bool): If True, returns a list of dictionaries with geo details.
+            patterns (str | list[str], optional): Filters geos by their description.
+            logic (callable): `all` or `any` logic for pattern matching.
         """
         if not self.products:
             print("❌ Error: Products must be set first via `set_products()`.")
@@ -222,7 +254,6 @@ class CensusData:
                     "product": product["title"],
                     "years": product["vintage"],
                 }
-
                 if sumlev not in combined_geos:
                     combined_geos[sumlev] = {
                         "sumlev": sumlev,
@@ -233,24 +264,61 @@ class CensusData:
                     combined_geos[sumlev]["applies_to"].append(applies_to_info)
 
         result_list = list(combined_geos.values())
+        if patterns:
+            pattern_list = [patterns] if isinstance(patterns, str) else patterns
+            try:
+                regexes = [re.compile(p, re.IGNORECASE) for p in pattern_list]
+                result_list = [
+                    g
+                    for g in result_list
+                    if g.get("desc")
+                    and logic(regex.search(g["desc"]) for regex in regexes)
+                ]
+            except re.error as e:
+                print(f"❌ Invalid regex pattern: {e}")
+                return []
 
-        # Consolidate the 'applies_to' field for each item in the results
         if to_dicts:
             for item in result_list:
-                consolidated_applies_to = {}
-                for applies_info in item["applies_to"]:
-                    title = applies_info["product"]
-                    years = applies_info["years"]
-                    if title not in consolidated_applies_to:
-                        consolidated_applies_to[title] = []
-                    consolidated_applies_to[title].extend(years)
-
+                consolidated = {}
+                for applies in item["applies_to"]:
+                    title, years = applies["product"], applies["years"]
+                    consolidated.setdefault(title, []).extend(years)
                 item["applies_to"] = [
-                    {"product": title, "years": sorted(list(set(years)))}
-                    for title, years in consolidated_applies_to.items()
+                    {"product": t, "years": sorted(list(set(y)))}
+                    for t, y in consolidated.items()
                 ]
 
+        self._filtered_geos_cache = result_list
         return result_list if to_dicts else [g["sumlev"] for g in result_list]
+
+    def set_geos(self, sumlevs: Optional[Union[str, List[str]]] = None):
+        """
+        Sets the active geographies.
+
+        Args:
+            sumlevs (str | list[str], optional): A single geography sumlev or a list of them.
+                If None, sets all geos from the last `list_geos` call.
+        """
+        geos_to_set = []
+        if sumlevs is None:
+            if not self._filtered_geos_cache:
+                print(
+                    "❌ Error: No geos to set. Run `list_geos` with your desired filters first."
+                )
+                return
+            geos_to_set = self._filtered_geos_cache
+        else:
+            sumlev_list = [sumlevs] if isinstance(sumlevs, str) else sumlevs
+            all_geos = self.list_geos(to_dicts=True)
+            geos_to_set = [g for g in all_geos if g.get("sumlev") in sumlev_list]
+
+        self.geos = geos_to_set
+        if not self.geos:
+            print("❌ Error: No valid geographies were found to set.")
+            return
+
+        print(f"✅ Geographies set: {[g['sumlev'] for g in self.geos]}")
 
     def list_variables(
         self,
@@ -261,17 +329,10 @@ class CensusData:
         """
         Lists available variables across all currently set products.
 
-        Returns a unique list of variables. If to_dicts is True, each
-        dictionary includes an 'applies_to' key detailing which products
-        and vintages it belongs to.
-
         Args:
             to_dicts (bool): If True (default), returns a list of dictionaries.
-                             If False, returns a list of variable names.
-            patterns (str | list[str], optional): A regex pattern or list of
-                patterns to filter variables by label.
-            logic (callable): `all` (default) or `any`. Determines if all
-                              patterns must match or if any can match.
+            patterns (str | list[str], optional): Filters variables by their label.
+            logic (callable): `all` or `any` logic for pattern matching.
         """
         if not self.products:
             print("❌ Error: Products must be set first via `set_products()`.")
@@ -292,7 +353,6 @@ class CensusData:
                     "product": product["title"],
                     "years": product["vintage"],
                 }
-
                 if name not in combined_vars:
                     combined_vars[name] = {
                         "name": name,
@@ -304,7 +364,6 @@ class CensusData:
                 else:
                     combined_vars[name]["applies_to"].append(applies_to_info)
 
-        # Filter after combining
         result_list = list(combined_vars.values())
         if patterns:
             pattern_list = [patterns] if isinstance(patterns, str) else patterns
@@ -320,20 +379,44 @@ class CensusData:
                 print(f"❌ Invalid regex pattern: {e}")
                 return []
 
-        # Consolidate the 'applies_to' field for each item in the results
         if to_dicts:
             for item in result_list:
-                consolidated_applies_to = {}
-                for applies_info in item["applies_to"]:
-                    title = applies_info["product"]
-                    years = applies_info["years"]
-                    if title not in consolidated_applies_to:
-                        consolidated_applies_to[title] = []
-                    consolidated_applies_to[title].extend(years)
-
+                consolidated = {}
+                for applies in item["applies_to"]:
+                    title, years = applies["product"], applies["years"]
+                    consolidated.setdefault(title, []).extend(years)
                 item["applies_to"] = [
-                    {"product": title, "years": sorted(list(set(years)))}
-                    for title, years in consolidated_applies_to.items()
+                    {"product": t, "years": sorted(list(set(y)))}
+                    for t, y in consolidated.items()
                 ]
 
+        self._filtered_variables_cache = result_list
         return result_list if to_dicts else [v["name"] for v in result_list]
+
+    def set_variables(self, names: Optional[Union[str, List[str]]] = None):
+        """
+        Sets the active variables.
+
+        Args:
+            names (str | list[str], optional): A single variable name or a list of them.
+                If None, sets all variables from the last `list_variables` call.
+        """
+        vars_to_set = []
+        if names is None:
+            if not self._filtered_variables_cache:
+                print(
+                    "❌ Error: No variables to set. Run `list_variables` with your desired filters first."
+                )
+                return
+            vars_to_set = self._filtered_variables_cache
+        else:
+            name_list = [names] if isinstance(names, str) else names
+            all_vars = self.list_variables(to_dicts=True)
+            vars_to_set = [v for v in all_vars if v.get("name") in name_list]
+
+        self.variables = vars_to_set
+        if not self.variables:
+            print("❌ Error: No valid variables were found to set.")
+            return
+
+        print(f"✅ Variables set: {[v['name'] for v in self.variables]}")

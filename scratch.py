@@ -8,9 +8,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-cd = CensusData()
-
-cd.load_key(os.getenv("CENSUS_API_KEY"))
+cd = CensusData(key=os.getenv("CENSUS_API_KEY"))
 
 potential_products = cd.list_products(
     to_dicts=True,
@@ -27,19 +25,14 @@ for product in potential_products:
 
 products_df = pl.DataFrame(potential_products)
 
-cd.set_products(
-    [
-        "ACS 5-Year Detailed Tables",
-        "American Community Survey: 5-Year Estimates: Detailed Tables 5-Year",
-    ]
-)
+cd.set_products()
 
-potential_geos = cd.list_geos(to_dicts=True)
+potential_geos = cd.list_geos(to_dicts=True, patterns="^place$")
 
 for geo in potential_geos:
-    print(geo)
+    print(geo["sumlev"], geo["desc"])
 
-geos_df = pl.DataFrame(potential_geos)
+cd.set_geos()
 
 potential_vars = cd.list_variables(
     to_dicts=True,
@@ -47,8 +40,6 @@ potential_vars = cd.list_variables(
 )
 
 for var in potential_vars:
-    print(var["name"], var["applies_to"])
+    print(var["name"], var["label"])
 
-vars_df = pl.DataFrame(potential_vars)
-
-print(vars_df)
+cd.set_variables("B19049_001E")

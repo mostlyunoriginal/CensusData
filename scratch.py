@@ -10,6 +10,7 @@ load_dotenv()
 
 cd = CensusData(key=os.getenv("CENSUS_API_KEY"))
 
+## example 1. for aggregate ACS
 potential_products = cd.list_products(
     to_dicts=True,
     patterns=[
@@ -23,14 +24,17 @@ potential_products = cd.list_products(
 for product in potential_products:
     print(product["title"], product["vintage"])
 
-for product in cd.list_products(
+## example 2. for ACS microdata
+potential_products = cd.list_products(
     patterns=[
         "american community|acs",
         "public use micro|pums",
         "5-year",
         "^(?!.*puerto rico).*$",
     ]
-):
+)
+
+for product in potential_products:
     print(product["title"], product["vintage"])
 
 cd.set_products()

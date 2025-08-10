@@ -143,6 +143,10 @@ class CensusData:
                         "vintage": self._parse_vintage(d.get("c_vintage")),
                         "type": dataset_type,
                         "url": access_url,
+                        "is_microdata": str(d.get("c_isMicrodata", "false")).lower()
+                        == "true",
+                        "is_aggregate": str(d.get("c_isAggregate", "false")).lower()
+                        == "true",
                     }
                 )
             self._products_cache = products

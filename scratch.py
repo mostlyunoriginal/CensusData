@@ -48,11 +48,11 @@ cd.set_geos()
 
 potential_vars = cd.list_variables(
     to_dicts=True,
-    patterns=["income", "person weight"],
+    patterns=["income", "person weight", "state"],
     logic=any,
 )
 
 for var in potential_vars:
     print(var["name"], var["label"])
 
-cd.set_variables(["PWGTP", "HINCP", "ADJINC"])
+cd.set_variables(["ST", "PWGTP", "HINCP", "ADJINC"])

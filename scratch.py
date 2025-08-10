@@ -23,11 +23,19 @@ potential_products = cd.list_products(
 for product in potential_products:
     print(product["title"], product["vintage"])
 
-products_df = pl.DataFrame(potential_products)
+for product in cd.list_products(
+    patterns=[
+        "american community|acs",
+        "public use micro|pums",
+        "5-year",
+        "^(?!.*puerto rico).*$",
+    ]
+):
+    print(product["title"], product["vintage"])
 
 cd.set_products()
 
-potential_geos = cd.list_geos(to_dicts=True, patterns="^place$")
+potential_geos = cd.list_geos(to_dicts=True, patterns="^state$")
 
 for geo in potential_geos:
     print(geo["sumlev"], geo["desc"])
@@ -36,10 +44,11 @@ cd.set_geos()
 
 potential_vars = cd.list_variables(
     to_dicts=True,
-    patterns=["median household income", "inflation-adjusted", "total"],
+    patterns=["income", "person weight"],
+    logic=any,
 )
 
 for var in potential_vars:
     print(var["name"], var["label"])
 
-cd.set_variables("B19049_001E")
+cd.set_variables(["PWGTP", "HINCP", "ADJINC"])

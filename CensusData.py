@@ -217,7 +217,7 @@ class CensusData:
             product["base_url"] = product.get("url", "")
             self.products.append(product)
             print(
-                f"✅ Product set: '{product['title']}' (Vintage(s): {product.get('vintage')})"
+                f"✅ Product set: '{product['title']}' (Vintage: {product.get('vintage')})"
             )
 
     def list_geos(

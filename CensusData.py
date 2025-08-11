@@ -2,6 +2,7 @@ import os
 import re
 import requests
 from typing import List, Union, Dict, Optional, Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 class CensusData:
@@ -63,15 +64,29 @@ class CensusData:
         else:
             print("⚠️ No API key provided. API requests may have stricter rate limits.")
 
-    def _get_json_from_url(self, url: str) -> Optional[Dict]:
+    def _get_json_from_url(
+        self, url: str, params: Optional[Dict] = None
+    ) -> Optional[List[List[str]]]:
         """Helper to fetch and parse JSON from a URL."""
+        if not params:
+            params = {}
+        if self.__key:
+            params["key"] = self.__key
+
         try:
-            params = {"key": self.__key} if self.__key else {}
-            response = requests.get(url, params=params, timeout=10)
+            response = requests.get(url, params=params, timeout=30)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.RequestException as e:
-            print(f"❌ Error fetching data from {url}: {e}")
+            error_message = str(e)
+            if e.response is not None:
+                # Attempt to include the API's specific error message for better debugging.
+                api_error = e.response.text.strip()
+                if api_error:
+                    error_message += f" - API Message: {api_error}"
+            print(
+                f"❌ Error fetching data from {url} with params {params}: {error_message}"
+            )
         except requests.exceptions.JSONDecodeError:
             print(f"❌ Failed to decode JSON from {url}")
         return None
@@ -242,7 +257,7 @@ class CensusData:
             print("❌ Error: Products must be set first via `set_products()`.")
             return []
 
-        combined_geos = {}
+        flat_geo_list = []
         for product in self.products:
             url = f"{product['base_url']}/geography.json"
             data = self._get_json_from_url(url)
@@ -254,20 +269,17 @@ class CensusData:
                 if not sumlev:
                     continue
 
-                applies_to_info = {
-                    "product": product["title"],
-                    "years": product["vintage"],
-                }
-                if sumlev not in combined_geos:
-                    combined_geos[sumlev] = {
+                flat_geo_list.append(
+                    {
                         "sumlev": sumlev,
                         "desc": geo_info.get("name"),
-                        "applies_to": [applies_to_info],
+                        "product": product["title"],
+                        "vintage": product["vintage"],
+                        "requires": geo_info.get("requires"),
                     }
-                else:
-                    combined_geos[sumlev]["applies_to"].append(applies_to_info)
+                )
 
-        result_list = list(combined_geos.values())
+        result_list = flat_geo_list
         if patterns:
             pattern_list = [patterns] if isinstance(patterns, str) else patterns
             try:
@@ -282,23 +294,16 @@ class CensusData:
                 print(f"❌ Invalid regex pattern: {e}")
                 return []
 
-        if to_dicts:
-            for item in result_list:
-                consolidated = {}
-                for applies in item["applies_to"]:
-                    title, years = applies["product"], applies["years"]
-                    consolidated.setdefault(title, []).extend(years)
-                item["applies_to"] = [
-                    {"product": t, "years": sorted(list(set(y)))}
-                    for t, y in consolidated.items()
-                ]
-
         self._filtered_geos_cache = result_list
-        return result_list if to_dicts else [g["sumlev"] for g in result_list]
+        return (
+            result_list
+            if to_dicts
+            else sorted(list(set([g["sumlev"] for g in result_list])))
+        )
 
     def set_geos(self, sumlevs: Optional[Union[str, List[str]]] = None):
         """
-        Sets the active geographies.
+        Sets the active geographies and informs the user of any required parent geos.
 
         Args:
             sumlevs (str | list[str], optional): A single geography sumlev or a list of them.
@@ -317,12 +322,31 @@ class CensusData:
             all_geos = self.list_geos(to_dicts=True)
             geos_to_set = [g for g in all_geos if g.get("sumlev") in sumlev_list]
 
-        self.geos = geos_to_set
-        if not self.geos:
+        if not geos_to_set:
             print("❌ Error: No valid geographies were found to set.")
             return
 
-        print(f"✅ Geographies set: {[g['sumlev'] for g in self.geos]}")
+        self.geos = geos_to_set
+
+        # Build informative success message by consolidating requirements across all set geos
+        messages = {}
+        for geo in self.geos:
+            desc = geo["desc"]
+            reqs = geo.get("requires") or []
+            if desc not in messages:
+                messages[desc] = set(reqs)
+            else:
+                messages[desc].update(reqs)
+
+        message_parts = []
+        for desc, reqs in messages.items():
+            if reqs:
+                message_parts.append(
+                    f"'{desc}' (requires `within` for: {', '.join(sorted(list(reqs)))})"
+                )
+            else:
+                message_parts.append(f"'{desc}'")
+        print(f"✅ Geographies set: {', '.join(message_parts)}")
 
     def list_variables(
         self,
@@ -342,7 +366,7 @@ class CensusData:
             print("❌ Error: Products must be set first via `set_products()`.")
             return []
 
-        combined_vars = {}
+        flat_variable_list = []
         for product in self.products:
             url = f"{product['base_url']}/variables.json"
             data = self._get_json_from_url(url)
@@ -353,22 +377,18 @@ class CensusData:
                 if name in ["GEO_ID", "for", "in"]:
                     continue
 
-                applies_to_info = {
-                    "product": product["title"],
-                    "years": product["vintage"],
-                }
-                if name not in combined_vars:
-                    combined_vars[name] = {
+                flat_variable_list.append(
+                    {
                         "name": name,
                         "label": details.get("label"),
                         "concept": details.get("concept"),
                         "group": details.get("group", "N/A"),
-                        "applies_to": [applies_to_info],
+                        "product": product["title"],
+                        "vintage": product["vintage"],
                     }
-                else:
-                    combined_vars[name]["applies_to"].append(applies_to_info)
+                )
 
-        result_list = list(combined_vars.values())
+        result_list = flat_variable_list
         if patterns:
             pattern_list = [patterns] if isinstance(patterns, str) else patterns
             try:
@@ -383,23 +403,16 @@ class CensusData:
                 print(f"❌ Invalid regex pattern: {e}")
                 return []
 
-        if to_dicts:
-            for item in result_list:
-                consolidated = {}
-                for applies in item["applies_to"]:
-                    title, years = applies["product"], applies["years"]
-                    consolidated.setdefault(title, []).extend(years)
-                item["applies_to"] = [
-                    {"product": t, "years": sorted(list(set(y)))}
-                    for t, y in consolidated.items()
-                ]
-
         self._filtered_variables_cache = result_list
-        return result_list if to_dicts else [v["name"] for v in result_list]
+        return (
+            result_list
+            if to_dicts
+            else sorted(list(set([v["name"] for v in result_list])))
+        )
 
     def set_variables(self, names: Optional[Union[str, List[str]]] = None):
         """
-        Sets the active variables.
+        Sets the active variables, grouping them by product and vintage.
 
         Args:
             names (str | list[str], optional): A single variable name or a list of them.
@@ -418,9 +431,28 @@ class CensusData:
             all_vars = self.list_variables(to_dicts=True)
             vars_to_set = [v for v in all_vars if v.get("name") in name_list]
 
-        self.variables = vars_to_set
-        if not self.variables:
+        if not vars_to_set:
             print("❌ Error: No valid variables were found to set.")
             return
 
-        print(f"✅ Variables set: {[v['name'] for v in self.variables]}")
+        # Collapse the flat list into the desired structure
+        collapsed_vars = {}
+        for var_info in vars_to_set:
+            # Create a hashable key for each product-vintage combination
+            key = (var_info["product"], tuple(var_info["vintage"]))
+            if key not in collapsed_vars:
+                collapsed_vars[key] = {
+                    "product": var_info["product"],
+                    "vintage": var_info["vintage"],
+                    "names": [],
+                }
+            collapsed_vars[key]["names"].append(var_info["name"])
+
+        self.variables = list(collapsed_vars.values())
+
+        print(f"✅ Variables set:")
+        for var_group in self.variables:
+            print(
+                f"  - Product: {var_group['product']} (Vintage: {var_group['vintage']})"
+            )
+            print(f"    Variables: {', '.join(var_group['names'])}")

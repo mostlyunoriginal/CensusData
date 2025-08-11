@@ -36,3 +36,6 @@ for variable in potential_variables:
     print(variable["name"], variable["label"])
 
 cd.set_variables(["B07009_002E", "B16010_009E"])
+
+cd._create_params()
+cd._explode_params()

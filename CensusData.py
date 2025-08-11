@@ -17,6 +17,7 @@ class CensusData:
         products (list[dict]): A list of the currently selected data product details.
         geos (list[dict]): A list of the currently selected geographies.
         variables (list[dict]): A list of the currently selected variables.
+        params (list[dict]): A list of combined geography and variable parameters for API calls.
     """
 
     def __init__(
@@ -35,6 +36,7 @@ class CensusData:
         self.products: List[Dict] = []
         self.geos: List[Dict] = []
         self.variables: List[Dict] = []
+        self.params: List[Dict] = []
         self.__key: Optional[str] = None
         self._products_cache: Optional[List[Dict[str, str]]] = None
         self._filtered_products_cache: Optional[List[Dict]] = None
@@ -456,3 +458,121 @@ class CensusData:
                 f"  - Product: {var_group['product']} (Vintage: {var_group['vintage']})"
             )
             print(f"    Variables: {', '.join(var_group['names'])}")
+
+    def _create_params(self):
+        """
+        Internal method to join the set geos and variables by product and vintage,
+        creating a list of parameters for API calls.
+        """
+        if not self.geos or not self.variables:
+            print(
+                "❌ Error: Geographies and variables must be set before creating parameters."
+            )
+            return
+
+        self.params = []
+        for geo in self.geos:
+            for var_group in self.variables:
+                # Check if the product and vintage match between the geo and variable group
+                if (
+                    geo["product"] == var_group["product"]
+                    and geo["vintage"] == var_group["vintage"]
+                ):
+                    self.params.append(
+                        {
+                            "product": geo["product"],
+                            "vintage": geo["vintage"],
+                            "sumlev": geo["sumlev"],
+                            "desc": geo["desc"],
+                            "requires": geo.get("requires"),
+                            "names": var_group["names"],
+                        }
+                    )
+
+        if not self.params:
+            print(
+                "⚠️ Warning: No matching product-vintage combinations found between set geos and variables."
+            )
+        else:
+            print(
+                f"✅ Parameters created for {len(self.params)} geo-variable combinations."
+            )
+
+    def _get_parent_geo_combinations(
+        self, base_url: str, required_geos: List[str], current_in_clause: Dict = {}
+    ) -> List[Dict]:
+        """
+        Recursively fetches all valid combinations of parent geographies.
+        """
+        if not required_geos:
+            return [current_in_clause]
+
+        level_to_fetch = required_geos[0]
+        remaining_levels = required_geos[1:]
+
+        params = {"get": f"NAME", "for": f"{level_to_fetch}:*"}
+        if current_in_clause:
+            params["in"] = " ".join([f"{k}:{v}" for k, v in current_in_clause.items()])
+
+        data = self._get_json_from_url(base_url, params)
+        if not data or len(data) < 2:
+            return []
+
+        try:
+            fips_index = data[0].index(level_to_fetch)
+        except ValueError:
+            print(
+                f"❌ Could not find FIPS column for '{level_to_fetch}' in API response."
+            )
+            return []
+
+        all_combinations = []
+        child_futures = {}
+        with ThreadPoolExecutor() as executor:
+            for row in data[1:]:
+                fips_code = row[fips_index]
+                new_in_clause = {**current_in_clause, level_to_fetch: fips_code}
+                future = executor.submit(
+                    self._get_parent_geo_combinations,
+                    base_url,
+                    remaining_levels,
+                    new_in_clause,
+                )
+                child_futures[future] = fips_code
+
+            for future in as_completed(child_futures):
+                all_combinations.extend(future.result())
+
+        return all_combinations
+
+    def _explode_params(self):
+        """
+        Internal method that expands the parameters by finding all geographic
+        combinations for parameters that have requirements.
+        """
+        if not self.params:
+            print("❌ Error: Parameters must be created first via `_create_params()`.")
+            return
+
+        for param in self.params:
+            required_geos = param.get("requires")
+            if not required_geos:
+                param["combinations"] = [
+                    {}
+                ]  # Represents a single call with no 'in' clause
+                continue
+
+            # Find the full product info to get the base_url
+            product_info = next(
+                (p for p in self.products if p["title"] == param["product"]), None
+            )
+            if not product_info:
+                continue
+
+            vintage = param["vintage"][0]
+            vintage_url = re.sub(r"/\d{4}/", f"/{vintage}/", product_info["base_url"])
+
+            print(f"ℹ️ Fetching parent geographies for '{param['desc']}'...")
+            combinations = self._get_parent_geo_combinations(vintage_url, required_geos)
+            param["combinations"] = combinations
+            print(f"✅ Found {len(combinations)} combinations for '{param['desc']}'.")

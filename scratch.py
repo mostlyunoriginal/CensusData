@@ -2,13 +2,13 @@ import sys
 import polars as pl
 
 sys.modules.pop("CensusData", None)
-from CensusData import CensusData
+from CensusData import CenDatHelper
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-cd = CensusData(years=[2017], key=os.getenv("CENSUS_API_KEY"))
+cd = CenDatHelper(years=[2017], key=os.getenv("CENSUS_API_KEY"))
 
 potential_products = cd.list_products(
     patterns=[
@@ -24,12 +24,12 @@ for product in potential_products:
 
 cd.set_products()
 
-potential_geos = cd.list_geos(to_dicts=True, patterns="public")
+potential_geos = cd.list_geos(to_dicts=True)
 
 for geo in potential_geos:
     print(geo["sumlev"], geo["desc"])
 
-cd.set_geos()
+cd.set_geos("795")
 
 potential_vars = cd.list_variables(
     to_dicts=True,
@@ -40,15 +40,13 @@ potential_vars = cd.list_variables(
 for var in potential_vars:
     print(var["name"], var["label"])
 
-cd.set_variables(["ST", "PUMA", "PWGTP", "HINCP", "ADJINC"])
+cd.set_variables(["PUMA", "PWGTP", "HINCP", "ADJINC"])
 
-data = cd.get_data(within={"state": ["06"]})
-
-df_06 = pl.DataFrame(
-    data[1:],
-    schema=data[0],
-    orient="row",
-    schema_overrides={"HINCP": pl.Int64, "PWGTP": pl.Float64, "ADJINC": pl.Float64},
+response = cd.get_data(
+    within=[
+        {"state": "1", "public use microdata area": ["400", "2500"]},
+        {"state": "4", "public use microdata area": "105"},
+    ]
 )
 
-print(df_06)
+pums = response.to_polars()[0]

@@ -5,7 +5,74 @@ from typing import List, Union, Dict, Optional, Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
-class CensusData:
+class CenDatResponse:
+    """
+    A container for the data returned by the CenDatHelper.get_data() method.
+    Provides methods to easily convert the raw data into Polars or Pandas DataFrames.
+    """
+
+    def __init__(self, data: List[Dict]):
+        self._data = data
+
+    def to_polars(self) -> List["pl.DataFrame"]:
+        """Converts the response data into a list of Polars DataFrames."""
+        try:
+            import polars as pl
+        except ImportError:
+            print(
+                "❌ Polars is not installed. Please install it with 'pip install polars'"
+            )
+            return []
+
+        dataframes = []
+        for item in self._data:
+            if not item.get("data"):
+                continue  # Skip if no data was returned for this parameter set
+
+            df = pl.DataFrame(item["data"], schema=item["schema"], orient="row")
+
+            # Add context columns
+            df = df.with_columns(
+                [
+                    pl.lit(item["product"]).alias("product"),
+                    pl.lit(item["vintage"][0]).alias("vintage"),
+                    pl.lit(item["sumlev"]).alias("sumlev"),
+                    pl.lit(item["desc"]).alias("desc"),
+                ]
+            )
+            dataframes.append(df)
+        return dataframes
+
+    def to_pandas(self) -> List["pd.DataFrame"]:
+        """Converts the response data into a list of Pandas DataFrames."""
+        try:
+            import pandas as pd
+        except ImportError:
+            print(
+                "❌ Pandas is not installed. Please install it with 'pip install pandas'"
+            )
+            return []
+
+        dataframes = []
+        for item in self._data:
+            if not item.get("data"):
+                continue  # Skip if no data was returned for this parameter set
+
+            df = pd.DataFrame(item["data"], columns=item["schema"])
+
+            # Add context columns
+            df["product"] = item["product"]
+            df["vintage"] = item["vintage"][0]
+            df["sumlev"] = item["sumlev"]
+            df["desc"] = item["desc"]
+            dataframes.append(df)
+        return dataframes
+
+    def __repr__(self) -> str:
+        return f"<CenDatResponse with {len(self._data)} result(s)>"
+
+
+class CenDatHelper:
     """
     A helper object for exploring and working with the US Census Bureau API.
 
@@ -24,7 +91,7 @@ class CensusData:
         self, years: Optional[Union[int, List[int]]] = None, key: Optional[str] = None
     ):
         """
-        Initializes the CensusData object.
+        Initializes the CenDatHelper object.
 
         Args:
             years (int | list[int], optional): The year or years of interest.
@@ -79,28 +146,29 @@ class CensusData:
             response = requests.get(url, params=params, timeout=30)
             response.raise_for_status()
             return response.json()
+        except requests.exceptions.JSONDecodeError as e:
+            # This specific error must be caught first.
+            print(
+                f"❌ Failed to decode JSON from {url}. Server response: {response.text}"
+            )
         except requests.exceptions.RequestException as e:
+            # This will catch other network errors (e.g., 404, 500).
             error_message = str(e)
             if e.response is not None:
-                # Attempt to include the API's specific error message for better debugging.
                 api_error = e.response.text.strip()
                 if api_error:
                     error_message += f" - API Message: {api_error}"
             print(
                 f"❌ Error fetching data from {url} with params {params}: {error_message}"
             )
-        except requests.exceptions.JSONDecodeError:
-            print(f"❌ Failed to decode JSON from {url}")
         return None
 
     def _parse_vintage(self, vintage_input: Union[str, int]) -> List[int]:
         """
-        Robustly parses a vintage value which could be an int, a string of an
-        int, or a string representing a range (e.g., '2017-2021').
+        Robustly parses a vintage value.
         """
         if not vintage_input:
             return []
-
         vintage_str = str(vintage_input)
         try:
             if "-" in vintage_str:
@@ -118,23 +186,12 @@ class CensusData:
         logic: Callable[[iter], bool] = all,
     ) -> Union[List[str], List[Dict[str, str]]]:
         """
-        Lists available data products from the JSON endpoint. The results of this
-        call are cached and can be applied by calling `set_products()` with no arguments.
-
-        Args:
-            years (int | list[int], optional): Filters products for these years.
-            patterns (str | list[str], optional): A regex pattern or list of
-                patterns to filter products by title.
-            to_dicts (bool): If True (default), returns a list of dictionaries.
-                             If False, returns a list of product titles.
-            logic (callable): `all` (default) or `any`. Determines if all
-                              patterns must match or if any can match.
+        Lists available data products from the JSON endpoint.
         """
         if not self._products_cache:
             data = self._get_json_from_url("https://api.census.gov/data.json")
             if not data or "dataset" not in data:
                 return []
-
             products = []
             for d in data["dataset"]:
                 access_url = next(
@@ -147,12 +204,10 @@ class CensusData:
                 )
                 if not access_url:
                     continue
-
                 c_dataset_val = d.get("c_dataset")
                 dataset_type = "N/A"
                 if isinstance(c_dataset_val, list) and len(c_dataset_val) > 1:
                     dataset_type = c_dataset_val[1]
-
                 products.append(
                     {
                         "title": d.get("title"),
@@ -168,10 +223,9 @@ class CensusData:
                 )
             self._products_cache = products
 
+        target_years = self.years
         if years is not None:
             target_years = [years] if isinstance(years, int) else list(years)
-        else:
-            target_years = self.years
 
         filtered = self._products_cache
         if target_years:
@@ -181,7 +235,6 @@ class CensusData:
                 for p in filtered
                 if p.get("vintage") and target_set.intersection(p["vintage"])
             ]
-
         if patterns:
             pattern_list = [patterns] if isinstance(patterns, str) else patterns
             try:
@@ -195,31 +248,22 @@ class CensusData:
             except re.error as e:
                 print(f"❌ Invalid regex pattern: {e}")
                 return []
-
         self._filtered_products_cache = filtered
         return filtered if to_dicts else [p["title"] for p in filtered]
 
     def set_products(self, titles: Optional[Union[str, List[str]]] = None):
         """
-        Sets the active data products. If titles are provided, sets those specific
-        products. If no titles are provided, sets all products from the last
-        `list_products` call.
-
-        Args:
-            titles (str | list[str], optional): A single product title or a list of titles.
+        Sets the active data products.
         """
         prods_to_set = []
         if titles is None:
             if not self._filtered_products_cache:
-                print(
-                    "❌ Error: No products to set. Run `list_products` with your desired filters first."
-                )
+                print("❌ Error: No products to set. Run `list_products` first.")
                 return
             prods_to_set = self._filtered_products_cache
         else:
             title_list = [titles] if isinstance(titles, str) else titles
             all_prods = self.list_products(to_dicts=True, years=self.years or [])
-
             for title in title_list:
                 matching_products = [p for p in all_prods if p.get("title") == title]
                 if not matching_products:
@@ -228,12 +272,10 @@ class CensusData:
                     )
                     continue
                 prods_to_set.extend(matching_products)
-
         self.products = []
         if not prods_to_set:
             print("❌ Error: No valid products were found to set.")
             return
-
         for product in prods_to_set:
             product["base_url"] = product.get("url", "")
             self.products.append(product)
@@ -249,28 +291,20 @@ class CensusData:
     ) -> Union[List[str], List[Dict[str, str]]]:
         """
         Lists available geographies across all currently set products.
-
-        Args:
-            to_dicts (bool): If True, returns a list of dictionaries with geo details.
-            patterns (str | list[str], optional): Filters geos by their description.
-            logic (callable): `all` or `any` logic for pattern matching.
         """
         if not self.products:
             print("❌ Error: Products must be set first via `set_products()`.")
             return []
-
         flat_geo_list = []
         for product in self.products:
             url = f"{product['base_url']}/geography.json"
             data = self._get_json_from_url(url)
             if not data or "fips" not in data:
                 continue
-
             for geo_info in data["fips"]:
                 sumlev = geo_info.get("geoLevelDisplay")
                 if not sumlev:
                     continue
-
                 flat_geo_list.append(
                     {
                         "sumlev": sumlev,
@@ -280,7 +314,6 @@ class CensusData:
                         "requires": geo_info.get("requires"),
                     }
                 )
-
         result_list = flat_geo_list
         if patterns:
             pattern_list = [patterns] if isinstance(patterns, str) else patterns
@@ -295,7 +328,6 @@ class CensusData:
             except re.error as e:
                 print(f"❌ Invalid regex pattern: {e}")
                 return []
-
         self._filtered_geos_cache = result_list
         return (
             result_list
@@ -306,17 +338,11 @@ class CensusData:
     def set_geos(self, sumlevs: Optional[Union[str, List[str]]] = None):
         """
         Sets the active geographies and informs the user of any required parent geos.
-
-        Args:
-            sumlevs (str | list[str], optional): A single geography sumlev or a list of them.
-                If None, sets all geos from the last `list_geos` call.
         """
         geos_to_set = []
         if sumlevs is None:
             if not self._filtered_geos_cache:
-                print(
-                    "❌ Error: No geos to set. Run `list_geos` with your desired filters first."
-                )
+                print("❌ Error: No geos to set. Run `list_geos` first.")
                 return
             geos_to_set = self._filtered_geos_cache
         else:
@@ -328,9 +354,19 @@ class CensusData:
             print("❌ Error: No valid geographies were found to set.")
             return
 
-        self.geos = geos_to_set
+        is_microdata_present = any(
+            p.get("is_microdata")
+            for p in self.products
+            if p["title"] in [g["product"] for g in geos_to_set]
+        )
+        unique_geos = set(g["desc"] for g in geos_to_set)
+        if is_microdata_present and len(unique_geos) > 1:
+            print(
+                "❌ Error: Only a single geography type (e.g., 'public use microdata area') can be set when working with microdata products."
+            )
+            return
 
-        # Build informative success message by consolidating requirements across all set geos
+        self.geos = geos_to_set
         messages = {}
         for geo in self.geos:
             desc = geo["desc"]
@@ -339,7 +375,6 @@ class CensusData:
                 messages[desc] = set(reqs)
             else:
                 messages[desc].update(reqs)
-
         message_parts = []
         for desc, reqs in messages.items():
             if reqs:
@@ -358,27 +393,19 @@ class CensusData:
     ) -> Union[List[str], List[Dict[str, str]]]:
         """
         Lists available variables across all currently set products.
-
-        Args:
-            to_dicts (bool): If True (default), returns a list of dictionaries.
-            patterns (str | list[str], optional): Filters variables by their label.
-            logic (callable): `all` or `any` logic for pattern matching.
         """
         if not self.products:
             print("❌ Error: Products must be set first via `set_products()`.")
             return []
-
         flat_variable_list = []
         for product in self.products:
             url = f"{product['base_url']}/variables.json"
             data = self._get_json_from_url(url)
             if not data or "variables" not in data:
                 continue
-
             for name, details in data["variables"].items():
                 if name in ["GEO_ID", "for", "in"]:
                     continue
-
                 flat_variable_list.append(
                     {
                         "name": name,
@@ -389,7 +416,6 @@ class CensusData:
                         "vintage": product["vintage"],
                     }
                 )
-
         result_list = flat_variable_list
         if patterns:
             pattern_list = [patterns] if isinstance(patterns, str) else patterns
@@ -404,7 +430,6 @@ class CensusData:
             except re.error as e:
                 print(f"❌ Invalid regex pattern: {e}")
                 return []
-
         self._filtered_variables_cache = result_list
         return (
             result_list
@@ -415,32 +440,22 @@ class CensusData:
     def set_variables(self, names: Optional[Union[str, List[str]]] = None):
         """
         Sets the active variables, grouping them by product and vintage.
-
-        Args:
-            names (str | list[str], optional): A single variable name or a list of them.
-                If None, sets all variables from the last `list_variables` call.
         """
         vars_to_set = []
         if names is None:
             if not self._filtered_variables_cache:
-                print(
-                    "❌ Error: No variables to set. Run `list_variables` with your desired filters first."
-                )
+                print("❌ Error: No variables to set. Run `list_variables` first.")
                 return
             vars_to_set = self._filtered_variables_cache
         else:
             name_list = [names] if isinstance(names, str) else names
             all_vars = self.list_variables(to_dicts=True)
             vars_to_set = [v for v in all_vars if v.get("name") in name_list]
-
         if not vars_to_set:
             print("❌ Error: No valid variables were found to set.")
             return
-
-        # Collapse the flat list into the desired structure
         collapsed_vars = {}
         for var_info in vars_to_set:
-            # Create a hashable key for each product-vintage combination
             key = (var_info["product"], tuple(var_info["vintage"]))
             if key not in collapsed_vars:
                 collapsed_vars[key] = {
@@ -449,9 +464,7 @@ class CensusData:
                     "names": [],
                 }
             collapsed_vars[key]["names"].append(var_info["name"])
-
         self.variables = list(collapsed_vars.values())
-
         print(f"✅ Variables set:")
         for var_group in self.variables:
             print(
@@ -461,19 +474,16 @@ class CensusData:
 
     def _create_params(self):
         """
-        Internal method to join the set geos and variables by product and vintage,
-        creating a list of parameters for API calls.
+        Internal method to join the set geos and variables by product and vintage.
         """
         if not self.geos or not self.variables:
             print(
                 "❌ Error: Geographies and variables must be set before creating parameters."
             )
             return
-
         self.params = []
         for geo in self.geos:
             for var_group in self.variables:
-                # Check if the product and vintage match between the geo and variable group
                 if (
                     geo["product"] == var_group["product"]
                     and geo["vintage"] == var_group["vintage"]
@@ -488,7 +498,6 @@ class CensusData:
                             "names": var_group["names"],
                         }
                     )
-
         if not self.params:
             print(
                 "⚠️ Warning: No matching product-vintage combinations found between set geos and variables."
@@ -502,22 +511,18 @@ class CensusData:
         self, base_url: str, required_geos: List[str], current_in_clause: Dict = {}
     ) -> List[Dict]:
         """
-        Recursively fetches all valid combinations of parent geographies.
+        Recursively fetches all valid combinations of parent geographies for aggregate data.
         """
         if not required_geos:
             return [current_in_clause]
-
         level_to_fetch = required_geos[0]
         remaining_levels = required_geos[1:]
-
-        params = {"get": f"NAME", "for": f"{level_to_fetch}:*"}
+        params = {"get": "NAME", "for": f"{level_to_fetch}:*"}
         if current_in_clause:
             params["in"] = " ".join([f"{k}:{v}" for k, v in current_in_clause.items()])
-
         data = self._get_json_from_url(base_url, params)
         if not data or len(data) < 2:
             return []
-
         try:
             fips_index = data[0].index(level_to_fetch)
         except ValueError:
@@ -525,54 +530,169 @@ class CensusData:
                 f"❌ Could not find FIPS column for '{level_to_fetch}' in API response."
             )
             return []
-
         all_combinations = []
-        child_futures = {}
         with ThreadPoolExecutor() as executor:
-            for row in data[1:]:
-                fips_code = row[fips_index]
-                new_in_clause = {**current_in_clause, level_to_fetch: fips_code}
-                future = executor.submit(
+            future_to_fips = {
+                executor.submit(
                     self._get_parent_geo_combinations,
                     base_url,
                     remaining_levels,
-                    new_in_clause,
-                )
-                child_futures[future] = fips_code
-
-            for future in as_completed(child_futures):
+                    {**current_in_clause, level_to_fetch: row[fips_index]},
+                ): row[fips_index]
+                for row in data[1:]
+            }
+            for future in as_completed(future_to_fips):
                 all_combinations.extend(future.result())
-
         return all_combinations
 
     def _explode_params(self):
         """
-        Internal method that expands the parameters by finding all geographic
-        combinations for parameters that have requirements.
+        Expands aggregate data parameters by finding all geographic combinations.
         """
-        if not self.params:
-            print("❌ Error: Parameters must be created first via `_create_params()`.")
-            return
-
         for param in self.params:
-            required_geos = param.get("requires")
-            if not required_geos:
-                param["combinations"] = [
-                    {}
-                ]  # Represents a single call with no 'in' clause
+            product_info = next(
+                (p for p in self.products if p["title"] == param["product"]), None
+            )
+            if not product_info or not product_info.get("is_aggregate"):
+                param["combinations"] = [{}]
                 continue
 
-            # Find the full product info to get the base_url
+            required_geos = param.get("requires")
+            if not required_geos:
+                param["combinations"] = [{}]
+                continue
+
+            vintage = param["vintage"][0]
+            vintage_url = re.sub(r"/\d{4}/", f"/{vintage}/", product_info["base_url"])
+            print(f"ℹ️ Fetching parent geographies for '{param['desc']}'...")
+            combinations = self._get_parent_geo_combinations(vintage_url, required_geos)
+            param["combinations"] = combinations
+            print(f"✅ Found {len(combinations)} combinations for '{param['desc']}'.")
+
+    def get_data(
+        self,
+        within: Union[str, Dict, List[Dict]] = "us",
+        max_workers: Optional[int] = None,
+    ) -> "CenDatResponse":
+        """
+        Retrieves data and returns a CenDatResponse object for further processing.
+        """
+        if not self.params:
+            self._create_params()
+        if not self.params:
+            print(
+                "❌ Error: Could not create parameters. Please set geos and variables."
+            )
+            return CenDatResponse([])
+        if "combinations" not in self.params[0]:
+            self._explode_params()
+
+        results_aggregator = {
+            i: {"schema": None, "data": []} for i in range(len(self.params))
+        }
+        all_tasks = []
+
+        within_clauses = within if isinstance(within, list) else [within]
+
+        for i, param in enumerate(self.params):
             product_info = next(
                 (p for p in self.products if p["title"] == param["product"]), None
             )
             if not product_info:
                 continue
 
+            variable_names = ",".join(param["names"])
+            target_geo = param["desc"]
             vintage = param["vintage"][0]
             vintage_url = re.sub(r"/\d{4}/", f"/{vintage}/", product_info["base_url"])
+            context = {"param_index": i}
 
-            print(f"ℹ️ Fetching parent geographies for '{param['desc']}'...")
-            combinations = self._get_parent_geo_combinations(vintage_url, required_geos)
-            param["combinations"] = combinations
-            print(f"✅ Found {len(combinations)} combinations for '{param['desc']}'.")
+            for within_clause in within_clauses:
+                if product_info.get("is_microdata"):
+                    if not isinstance(within_clause, dict):
+                        print(
+                            "❌ Error: A `within` dictionary or list of dictionaries is required for microdata requests."
+                        )
+                        continue
+
+                    within_copy = within_clause.copy()
+                    target_geo_codes = within_copy.pop(target_geo, None)
+
+                    if target_geo_codes is None:
+                        print(
+                            f"❌ Error: `within` dictionary must contain the target geography: '{target_geo}'"
+                        )
+                        continue
+
+                    if isinstance(target_geo_codes, str):
+                        target_geo_codes = [target_geo_codes]
+
+                    codes_str = ",".join(target_geo_codes)
+                    api_params = {
+                        "get": variable_names,
+                        "for": f"{target_geo}:{codes_str}",
+                    }
+                    if within_copy:
+                        api_params["in"] = " ".join(
+                            [f"{k}:{v}" for k, v in within_copy.items()]
+                        )
+                    all_tasks.append((vintage_url, api_params, context))
+
+                elif product_info.get("is_aggregate"):
+                    combinations = param.get("combinations", [{}])
+                    if isinstance(within_clause, dict):
+                        filtered_combinations = []
+                        for combo in combinations:
+                            is_match = True
+                            for key, value in within_clause.items():
+                                if (
+                                    key not in combo
+                                    or (
+                                        isinstance(value, list)
+                                        and combo[key] not in value
+                                    )
+                                    or (isinstance(value, str) and combo[key] != value)
+                                ):
+                                    is_match = False
+                                    break
+                            if is_match:
+                                filtered_combinations.append(combo)
+                        combinations = filtered_combinations
+
+                    for combo in combinations:
+                        api_params = {"get": variable_names}
+                        if combo:
+                            api_params["in"] = " ".join(
+                                [f"{k}:{v}" for k, v in combo.items()]
+                            )
+                        api_params["for"] = f"{target_geo}:*"
+                        all_tasks.append((vintage_url, api_params, context))
+
+        if not all_tasks:
+            print("❌ Error: Could not determine any API calls to make.")
+            return CenDatResponse([])
+
+        print(f"ℹ️ Making {len(all_tasks)} API call(s)...")
+        with ThreadPoolExecutor(max_workers=max_workers or len(all_tasks)) as executor:
+            future_to_context = {
+                executor.submit(self._get_json_from_url, url, params): context
+                for url, params, context in all_tasks
+            }
+            for future in as_completed(future_to_context):
+                context = future_to_context[future]
+                param_index = context["param_index"]
+                try:
+                    data = future.result()
+                    if data and len(data) > 1:
+                        if results_aggregator[param_index]["schema"] is None:
+                            results_aggregator[param_index]["schema"] = data[0]
+                        results_aggregator[param_index]["data"].extend(data[1:])
+                except Exception as exc:
+                    print(f"❌ Task for {context} generated an exception: {exc}")
+
+        for i, param in enumerate(self.params):
+            aggregated_result = results_aggregator[i]
+            param["schema"] = aggregated_result["schema"]
+            param["data"] = aggregated_result["data"]
+
+        return CenDatResponse(self.params)

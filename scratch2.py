@@ -25,15 +25,17 @@ for product in potential_products:
 
 cdh.set_products()
 
-# for geo in cdh.list_geos(to_dicts=True):
-#     print(geo)
+for geo in cdh.list_geos(to_dicts=True):
+    print(geo)
 
 cdh.set_geos(["155"])
 
-# potential_variables = cdh.list_variables(to_dicts=True, patterns=["total", "less.*high"])
+potential_variables = cdh.list_variables(
+    to_dicts=True, patterns=["total", "less.*high"]
+)
 
-# for variable in potential_variables:
-#     print(variable["name"], variable["label"])
+for variable in potential_variables:
+    print(variable["name"], variable["label"])
 
 cdh.set_variables(["B07009_002E", "B16010_009E"])
 
@@ -41,6 +43,7 @@ response = cdh.get_data(
     max_workers=200,
     within=[
         {"state": "36", "place": ["61797", "61621"]},
+        {"state": "06"},
     ],
 )
 

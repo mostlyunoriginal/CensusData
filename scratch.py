@@ -1,5 +1,4 @@
 import sys
-import polars as pl
 
 sys.modules.pop("CensusData", None)
 from CensusData import CenDatHelper

@@ -1,0 +1,57 @@
+\begin{MintedVerbatim}[commandchars=\\\{\}]
+\PYG{k+kn}{import}\PYG{+w}{ }\PYG{n+nn}{sys}
+\PYG{k+kn}{import}\PYG{+w}{ }\PYG{n+nn}{polars}\PYG{+w}{ }\PYG{k}{as}\PYG{+w}{ }\PYG{n+nn}{pl}
+
+\PYG{n}{sys}\PYG{o}{.}\PYG{n}{modules}\PYG{o}{.}\PYG{n}{pop}\PYG{p}{(}\PYG{l+s+s2}{\PYGZdq{}CensusData\PYGZdq{}}\PYG{p}{,} \PYG{k+kc}{None}\PYG{p}{)}
+\PYG{k+kn}{from}\PYG{+w}{ }\PYG{n+nn}{CensusData}\PYG{+w}{ }\PYG{k+kn}{import} \PYG{n}{CenDatHelper}
+\PYG{k+kn}{import}\PYG{+w}{ }\PYG{n+nn}{os}
+\PYG{k+kn}{from}\PYG{+w}{ }\PYG{n+nn}{dotenv}\PYG{+w}{ }\PYG{k+kn}{import} \PYG{n}{load\PYGZus{}dotenv}
+
+\PYG{n}{load\PYGZus{}dotenv}\PYG{p}{()}
+
+\PYG{c+c1}{\PYGZsh{} Initialize for multiple years}
+\PYG{n}{cdh} \PYG{o}{=} \PYG{n}{CenDatHelper}\PYG{p}{(}\PYG{n}{years}\PYG{o}{=}\PYG{p}{[}\PYG{l+m+mi}{2022}\PYG{p}{,} \PYG{l+m+mi}{2023}\PYG{p}{],} \PYG{n}{key}\PYG{o}{=}\PYG{n}{os}\PYG{o}{.}\PYG{n}{getenv}\PYG{p}{(}\PYG{l+s+s2}{\PYGZdq{}CENSUS\PYGZus{}API\PYGZus{}KEY\PYGZdq{}}\PYG{p}{))}
+
+\PYG{c+c1}{\PYGZsh{} \PYGZhy{}\PYGZhy{}\PYGZhy{} Step 1: Find and select products \PYGZhy{}\PYGZhy{}\PYGZhy{}}
+\PYG{c+c1}{\PYGZsh{} Find the standard 5\PYGZhy{}year detailed tables, excluding special tables}
+\PYG{n}{potential\PYGZus{}products} \PYG{o}{=} \PYG{n}{cdh}\PYG{o}{.}\PYG{n}{list\PYGZus{}products}\PYG{p}{(}
+    \PYG{n}{to\PYGZus{}dicts}\PYG{o}{=}\PYG{k+kc}{True}\PYG{p}{,}
+    \PYG{n}{patterns}\PYG{o}{=}\PYG{p}{[}
+        \PYG{l+s+s2}{\PYGZdq{}american community|acs\PYGZdq{}}\PYG{p}{,}
+        \PYG{l+s+s2}{\PYGZdq{}5\PYGZhy{}year\PYGZdq{}}\PYG{p}{,}
+        \PYG{l+s+s2}{\PYGZdq{}detailed\PYGZdq{}}\PYG{p}{,}
+        \PYG{l+s+s2}{\PYGZdq{}\PYGZca{}(?!.*(alaska|aian|selected)).*\PYGZdl{}\PYGZdq{}}\PYG{p}{,}
+    \PYG{p}{],}
+\PYG{p}{)}
+\PYG{n}{cdh}\PYG{o}{.}\PYG{n}{set\PYGZus{}products}\PYG{p}{()}
+
+\PYG{c+c1}{\PYGZsh{} \PYGZhy{}\PYGZhy{}\PYGZhy{} Step 2: Find and select geography \PYGZhy{}\PYGZhy{}\PYGZhy{}}
+\PYG{c+c1}{\PYGZsh{} Set the geography to \PYGZsq{}place\PYGZsq{}. The success message will inform us}
+\PYG{c+c1}{\PYGZsh{} that this geography requires \PYGZsq{}state\PYGZsq{} to be specified.}
+\PYG{n}{cdh}\PYG{o}{.}\PYG{n}{set\PYGZus{}geos}\PYG{p}{([}\PYG{l+s+s2}{\PYGZdq{}160\PYGZdq{}}\PYG{p}{])}
+
+\PYG{c+c1}{\PYGZsh{} \PYGZhy{}\PYGZhy{}\PYGZhy{} Step 3: Find and select variables \PYGZhy{}\PYGZhy{}\PYGZhy{}}
+\PYG{n}{potential\PYGZus{}variables} \PYG{o}{=} \PYG{n}{cdh}\PYG{o}{.}\PYG{n}{list\PYGZus{}variables}\PYG{p}{(}
+    \PYG{n}{to\PYGZus{}dicts}\PYG{o}{=}\PYG{k+kc}{True}\PYG{p}{,} \PYG{n}{patterns}\PYG{o}{=}\PYG{p}{[}\PYG{l+s+s2}{\PYGZdq{}total\PYGZdq{}}\PYG{p}{,} \PYG{l+s+s2}{\PYGZdq{}less.*high\PYGZdq{}}\PYG{p}{]}
+\PYG{p}{)}
+\PYG{n}{cdh}\PYG{o}{.}\PYG{n}{set\PYGZus{}variables}\PYG{p}{([}\PYG{l+s+s2}{\PYGZdq{}B07009\PYGZus{}002E\PYGZdq{}}\PYG{p}{,} \PYG{l+s+s2}{\PYGZdq{}B16010\PYGZus{}009E\PYGZdq{}}\PYG{p}{])}
+
+\PYG{c+c1}{\PYGZsh{} \PYGZhy{}\PYGZhy{}\PYGZhy{} Step 4: Get the data \PYGZhy{}\PYGZhy{}\PYGZhy{}}
+\PYG{c+c1}{\PYGZsh{} Provide a list of dictionaries to `within`. This will fetch data for}
+\PYG{c+c1}{\PYGZsh{} two specific places in New York (state 36) and ALL places in}
+\PYG{c+c1}{\PYGZsh{} California (state 06). The helper will automatically find all places}
+\PYG{c+c1}{\PYGZsh{} in California for you.}
+\PYG{n}{response} \PYG{o}{=} \PYG{n}{cdh}\PYG{o}{.}\PYG{n}{get\PYGZus{}data}\PYG{p}{(}
+    \PYG{n}{max\PYGZus{}workers}\PYG{o}{=}\PYG{l+m+mi}{200}\PYG{p}{,}
+    \PYG{n}{within}\PYG{o}{=}\PYG{p}{[}
+        \PYG{p}{\PYGZob{}}\PYG{l+s+s2}{\PYGZdq{}state\PYGZdq{}}\PYG{p}{:} \PYG{l+s+s2}{\PYGZdq{}36\PYGZdq{}}\PYG{p}{,} \PYG{l+s+s2}{\PYGZdq{}place\PYGZdq{}}\PYG{p}{:} \PYG{p}{[}\PYG{l+s+s2}{\PYGZdq{}61797\PYGZdq{}}\PYG{p}{,} \PYG{l+s+s2}{\PYGZdq{}61621\PYGZdq{}}\PYG{p}{]\PYGZcb{},}
+        \PYG{p}{\PYGZob{}}\PYG{l+s+s2}{\PYGZdq{}state\PYGZdq{}}\PYG{p}{:} \PYG{l+s+s2}{\PYGZdq{}06\PYGZdq{}}\PYG{p}{\PYGZcb{},}
+    \PYG{p}{],}
+\PYG{p}{)}
+
+\PYG{c+c1}{\PYGZsh{} \PYGZhy{}\PYGZhy{}\PYGZhy{} Step 5: Convert and combine DataFrames \PYGZhy{}\PYGZhy{}\PYGZhy{}}
+\PYG{c+c1}{\PYGZsh{} The result will be a list of DataFrames (one for each product/vintage).}
+\PYG{c+c1}{\PYGZsh{} We can concatenate them into a single DataFrame for analysis.}
+\PYG{n}{final\PYGZus{}df} \PYG{o}{=} \PYG{n}{pl}\PYG{o}{.}\PYG{n}{concat}\PYG{p}{(}\PYG{n}{response}\PYG{o}{.}\PYG{n}{to\PYGZus{}polars}\PYG{p}{())}
+\PYG{n+nb}{print}\PYG{p}{(}\PYG{n}{final\PYGZus{}df}\PYG{o}{.}\PYG{n}{head}\PYG{p}{())}
+\end{MintedVerbatim}

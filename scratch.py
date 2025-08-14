@@ -1,4 +1,5 @@
 import sys
+from pprint import pprint
 
 sys.modules.pop("CensusData", None)
 from CensusData import CenDatHelper
@@ -48,4 +49,6 @@ response = cd.get_data(
     ]
 )
 
-pums = response.to_polars()[0]
+for detail in ["products", "geos", "variables"]:
+    print("-" * 20, detail, "-" * 20)
+    pprint(cd[detail])

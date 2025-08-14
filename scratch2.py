@@ -16,6 +16,18 @@ potential_products = cdh.list_products(
         "american community|acs",
         "5-year",
         "detailed",
+    ],
+)
+
+for product in potential_products:
+    print(product["title"], product["vintage"])
+
+potential_products = cdh.list_products(
+    to_dicts=True,
+    patterns=[
+        "american community|acs",
+        "5-year",
+        "detailed",
         "^(?!.*(alaska|aian|selected)).*$",
     ],
 )
@@ -40,11 +52,18 @@ for variable in potential_variables:
 cdh.set_variables(["B07009_002E", "B16010_009E"])
 
 response = cdh.get_data(
-    max_workers=200,
+    max_workers=50,
     within=[
         {"state": "36", "place": ["61797", "61621"]},
         {"state": "06"},
     ],
 )
 
-test = pl.concat(response.to_polars())
+estimates = pl.concat(
+    response.to_polars(
+        schema_overrides={
+            "B07009_002E": pl.Int64,
+            "B16010_009E": pl.Int64,
+        }
+    )
+)
